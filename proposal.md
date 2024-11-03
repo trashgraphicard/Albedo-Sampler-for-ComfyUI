@@ -33,7 +33,9 @@ Minimal Viable Outcome:
   2. Architect the basic workflow inside comfyUI (without my custom node)
 
 - Week 2
-  1. First node created (node that does not inviolve AI)
+  1. Research how to write custom node
+  2. First node created (node that does not inviolve AI)
 
 - Week N (Final)
-  1. Second node created (This node involved AI so it might take longer.
+  1. Research on leveraging AI
+  2. Second node created (This node involved AI so it might take longer.
