@@ -4,7 +4,7 @@
 <https://github.com/trashgraphicard/I-Will-Name-It-Later.git>
 
 ## Description
-Some comfyUI nodes that assist in sampling albedo textures.
+Some comfyUI nodes that assist in sampling albedo textures. The sampled albedo can be easily postprocessed into other pbr textures.
 
 ## Features
 - Feature 1
