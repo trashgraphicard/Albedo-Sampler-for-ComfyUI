@@ -1,10 +1,10 @@
-# Albedo Sample For ComfyUI
+# Albedo Sampler For ComfyUI
 
 ## Repository
 <https://github.com/trashgraphicard/I-Will-Name-It-Later.git>
 
 ## Description
-Some comfyUI nodes that assist in sampling the albedo texture.
+Some comfyUI nodes that assist in sampling albedo textures.
 
 ## Features
 - Feature 1
