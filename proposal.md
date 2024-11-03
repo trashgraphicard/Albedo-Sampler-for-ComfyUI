@@ -1,7 +1,7 @@
 # Albedo Sample For ComfyUI
 
 ## Repository
-<Link to your project's public GitHub respository>
+<https://github.com/trashgraphicard/I-Will-Name-It-Later.git>
 
 ## Description
 Some comfyUI nodes that assist in sampling the albedo texture.
