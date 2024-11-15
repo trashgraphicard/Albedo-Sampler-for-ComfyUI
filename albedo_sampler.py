@@ -1,7 +1,12 @@
 import numpy as np
 from PIL import Image, ImageFilter, ImageChops, ImageOps
-import pilgram
 import torch
+
+import comfy.diffusers_load
+import comfy.samplers
+import comfy.sample
+import comfy.sd
+import comfy.utils
 
 # Node: Sample Image
 class SampleImage:
@@ -24,11 +29,11 @@ class SampleImage:
     def sample_image(self, images, radius=10, strength=4):
         for img in images:
             image = img
-        hp1 = 1.0 - images
-        hp1 = self.high_pass(hp1, radius, strength)
-        hp1 = 1.0 - hp1
-        hp2 = self.high_pass(image, radius, strength)
-        blend_tensor = self.image_blend(hp1, hp2)
+        hp_dark = 1.0 - images
+        hp_dark = self.high_pass(hp_dark, radius, strength)
+        hp_dark = 1.0 - hp_dark
+        hp_light = self.high_pass(image, radius, strength)
+        blend_tensor = self.image_blend(hp_dark, hp_light)
         ave_color = self.image_average_color(image)
         blend_tensor = self.image_blend_overlay(blend_tensor, ave_color)
 
@@ -65,7 +70,7 @@ class SampleImage:
     def image_blend_overlay(self, image_a, image_b):
         img_a = tensor2pil(image_a)
         img_b = tensor2pil(image_b)    
-        img_result = pilgram.css.blending.overlay(img_a, img_b)
+        img_result = ImageChops.overlay(img_a, img_b)
 
         return pil2tensor(img_result)
 
