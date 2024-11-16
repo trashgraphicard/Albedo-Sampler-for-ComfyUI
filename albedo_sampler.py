@@ -1,12 +1,61 @@
 import numpy as np
 from PIL import Image, ImageFilter, ImageChops, ImageOps
 import torch
+from torch import Tensor
 
 import comfy.diffusers_load
 import comfy.samplers
 import comfy.sample
 import comfy.sd
 import comfy.utils
+import comfy.clip_vision
+import comfy.model_management
+
+import latent_preview
+
+class KSampler:
+    def __init__(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent
+                 , denoise=1.0, disable_noise=False, start_step=None, last_step=None, force_full_denoise=False):
+        self.model = model
+        self.seed = seed
+        self.steps = steps
+        self.cfg = cfg
+        self.sampler_name = sampler_name
+        self.schedular = scheduler
+        self.positive = positive
+        self.negative = negative
+        self.latent = latent
+        self.denoise = denoise
+        self.disable_noise = disable_noise
+        self.start_step = start_step
+        self.last_step = last_step
+        self.force_full_denoise = force_full_denoise
+
+    def update_latent(self, latent):
+        self.latent = latent
+
+    def sample(self):
+        latent_image = self.latent["samples"]
+        latent_image = comfy.sample.fix_empty_latent_channels(self.model, latent_image)
+
+        if self.disable_noise:
+            noise = torch.zeros(latent_image.size(), dtype=latent_image.dtype, layout=latent_image.layout, device="cpu")
+        else:
+            batch_inds = self.latent["batch_index"] if "batch_index" in self.latent else None
+            noise = comfy.sample.prepare_noise(latent_image, self.seed, batch_inds)
+
+        noise_mask = None
+        if "noise_mask" in self.latent:
+            noise_mask = self.latent["noise_mask"]
+
+        callback = latent_preview.prepare_callback(self.model, self.steps)
+        disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+        samples = comfy.sample.sample(self.model, noise, self.steps, self.cfg, self.sampler_name, self.scheduler, self.positive, self.negative, latent_image,
+                                    denoise=self.denoise, disable_noise=self.disable_noise, start_step=self.start_step, last_step=self.last_step,
+                                    force_full_denoise=self.force_full_denoise, noise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=self.seed)
+        out = self.latent.copy()
+        out["samples"] = samples
+        return (out, )
 
 # Node: Sample Image
 class SampleImage:
