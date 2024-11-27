@@ -1,7 +1,7 @@
+import cv2
 import numpy as np
 from PIL import Image, ImageFilter, ImageChops, ImageOps
 import torch
-from torch import Tensor
 
 import comfy.diffusers_load
 import comfy.samplers
@@ -13,7 +13,7 @@ import comfy.model_management
 
 import latent_preview
 
-class KSampler:
+class KSAMPLER:
     def __init__(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent
                  , denoise=1.0, disable_noise=False, start_step=None, last_step=None, force_full_denoise=False):
         self.model = model
@@ -21,7 +21,7 @@ class KSampler:
         self.steps = steps
         self.cfg = cfg
         self.sampler_name = sampler_name
-        self.schedular = scheduler
+        self.scheduler = scheduler
         self.positive = positive
         self.negative = negative
         self.latent = latent
@@ -55,7 +55,7 @@ class KSampler:
                                     force_full_denoise=self.force_full_denoise, noise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=self.seed)
         out = self.latent.copy()
         out["samples"] = samples
-        return (out, )
+        return out
 
 # Node: Sample Image
 class SampleImage:
@@ -63,7 +63,7 @@ class SampleImage:
         pass
 
     @classmethod
-    def INPUT_TYPES(cls):
+    def INPUT_TYPES(s):
         return {
             "required": {
                 "images": ("IMAGE",),
@@ -144,6 +144,124 @@ class SampleImage:
         ave_color_img = Image.new('RGB', (width,height), (ave_red,ave_green,ave_blue))
 
         return pil2tensor(ave_color_img)
+# Node: Make Seamless Tile
+class MakeSeamlessTile:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "vae": ("VAE",),
+                "positive": ("CONDITIONING",),
+                "negative": ("CONDITIONING",),
+                "mask_strength": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "kernel_size": ("INT", {"default": 79, "min": 1, "max": 10000}),
+                "sigma": ("FLOAT", {"default": 10.0, "min": 0.1, "max": 100.0, "step": 0.1}),
+                "image": ("IMAGE",),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
+                "cfg": ("FLOAT", {"default": 7.0, "min": 0.0, "max": 100.0, "step":0.1, "round": 0.01}),
+                "sampler_name": (comfy.samplers.KSampler.SAMPLERS,),
+                "scheduler": (comfy.samplers.KSampler.SCHEDULERS,),
+                "denoise": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+            }
+        }
+    RETURN_TYPES = ("IMAGE", "MASK",)
+    FUNCTION = ("make_seamless_tile")
+    CATEGORY = ("Albedo Sampler")
+
+    def make_seamless_tile(self, model, vae, positive, negative, mask_strength, kernel_size, sigma, image, seed, steps, cfg, sampler_name, scheduler, denoise):
+        
+        # offset image and paint in the seams, then offset it back
+        img_base = self.offset_image(image)
+        cross_mask = self.make_blurred_seams_mask(image, mask_strength, kernel_size, sigma)
+        img_painted = self.vaeencode(img_base, vae)
+        img_painted = self.set__latent_noise_mask(img_painted, cross_mask)
+        ksampler = KSAMPLER(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, img_painted, denoise)
+        img_painted = ksampler.sample()
+        img_painted = self.vaedecode(img_painted, vae)
+        out1 = self.composite_tensor_image(img_painted, img_base, cross_mask)
+        #offset back
+        #offset x
+        #inpaint center
+        #composite
+        #offset y
+        #inpaint center
+        #composite
+
+        return (out1, cross_mask,)
+
+    def vaeencode(self, image, vae):
+        lat = vae.encode(image[:,:,:,:3])
+        return {"samples": lat}
+    
+    def vaedecode(self, latent, vae):
+        images = vae.decode(latent["samples"])
+        if len(images.shape) == 5: #Combine batches
+            images = images.reshape(-1, images.shape[-3], images.shape[-2], images.shape[-1])
+        return images
+    
+    def set__latent_noise_mask(self, samples, mask):
+        s = samples.copy()
+        s["noise_mask"] = mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1]))
+        return s
+    
+    def offset_image(self, image, tilesX = 2, tilesY = 2):
+
+        # 4 dimension tensor, batch, height, width, channel
+        B, H, W, C = image.shape
+
+        offset_y = W // 2
+        offset_x = H // 2
+        output_image = torch.zeros_like(image)
+
+        # Top-left to bottom-right
+        output_image[:, offset_y:, offset_x:, :] = image[:, :offset_y, :offset_x, :]
+        # Top-right to bottom-left
+        output_image[:, offset_y:, :offset_x, :] = image[:, :offset_y, offset_x:, :]
+        # Bottom-left to top-right
+        output_image[:, :offset_y, offset_x:, :] = image[:, offset_y:, :offset_x, :]
+        # Bottom-right to top-left
+        output_image[:, :offset_y, :offset_x, :] = image[:, offset_y:, offset_x:, :]
+
+        return output_image
+    
+    def make_blurred_seams_mask(self, image, mask_strength, kernel_size, sigma):
+        B, H, W, C = image.shape
+        if not (0 <= mask_strength <= 1):
+            raise ValueError("Strength must be between 0 and 1.")
+    
+        vertical_thickness = int(H * mask_strength)
+        horizontal_thickness = int(W * mask_strength)
+        mask = np.zeros((H, W), dtype=np.uint8)
+    
+        center_y, center_x = H // 2, W // 2
+        mask[center_y - vertical_thickness // 2:center_y + vertical_thickness // 2, :] = 255
+        mask[:, center_x - horizontal_thickness // 2:center_x + horizontal_thickness // 2] = 255
+
+        # blur the mask then normalizing it (divide by 255)
+        normalized_blurred_mask = self._gaussian_blur_mask(mask, kernel_size, sigma) / 255.0
+    
+        return torch.tensor(normalized_blurred_mask, dtype=torch.float32)
+    
+    def _gaussian_blur_mask(self, mask, kernel_size, sigma = 10.0):
+        if kernel_size <= 0:
+            raise ValueError("Strength must be a positive.")
+        # Strength mush be odd number due to kernel
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+    
+        blurred_mask = cv2.GaussianBlur(mask, (kernel_size, kernel_size), sigma)
+    
+        return blurred_mask
+    
+    def composite_tensor_image(self, img1, img2, mask):
+
+        mask = mask.unsqueeze(0).unsqueeze(-1)
+        mask = mask.expand(img1.shape[0], -1, -1, img1.shape[-1])
+
+        return mask * img1 + (1 - mask) * img2
+
 
 # functions to convert betweem PIL Image and tensor
 def tensor2pil(image):
@@ -156,9 +274,11 @@ def pil2tensor(image):
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
     "Sample Image": SampleImage,
+    "Make Seamless Tile": MakeSeamlessTile
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Sample Image": "Sample Image",
+    "Make Seamless Tile": "Make Seamless Tile"
 }
