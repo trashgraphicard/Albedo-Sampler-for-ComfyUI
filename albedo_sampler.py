@@ -166,30 +166,46 @@ class MakeSeamlessTile:
                 "denoise": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
             }
         }
-    RETURN_TYPES = ("IMAGE", "MASK",)
+    RETURN_TYPES = ("IMAGE",)
     FUNCTION = ("make_seamless_tile")
     CATEGORY = ("Albedo Sampler")
 
     def make_seamless_tile(self, model, vae, positive, negative, mask_strength, kernel_size, sigma, image, seed, steps, cfg, sampler_name, scheduler, denoise):
         
-        # offset image and paint in the seams, then offset it back
-        img_base = self.offset_image(image)
-        cross_mask = self.make_blurred_seams_mask(image, mask_strength, kernel_size, sigma)
-        img_painted = self.vaeencode(img_base, vae)
-        img_painted = self.set__latent_noise_mask(img_painted, cross_mask)
-        ksampler = KSAMPLER(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, img_painted, denoise)
-        img_painted = ksampler.sample()
-        img_painted = self.vaedecode(img_painted, vae)
-        out1 = self.composite_tensor_image(img_painted, img_base, cross_mask)
-        #offset back
-        #offset x
-        #inpaint center
-        #composite
-        #offset y
-        #inpaint center
-        #composite
+        cross_mask = self.make_cross_mask(image, mask_strength, kernel_size, sigma)
+        oval_mask = self.make_oval_mask(image, mask_strength, kernel_size, sigma)
 
-        return (out1, cross_mask,)
+        # Offset image x and y and inpaint the seams
+        base_img = self.offset_image(image)
+        latent = self.vaeencode(base_img, vae)
+        latent = self.set__latent_noise_mask(latent, cross_mask)
+        ksampler = KSAMPLER(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise)
+        latent = ksampler.sample()
+        img = self.vaedecode(latent, vae)
+        img = self.composite_tensor_image(img, base_img, cross_mask)
+
+        # Offset image x and inpaint the seam results from first inpaint
+        base_img = self.offset_image(img, 0, 0.5)
+        latent = self.vaeencode(base_img, vae)
+        latent = self.set__latent_noise_mask(latent, oval_mask)
+        ksampler.update_latent(latent)
+        latent = ksampler.sample()
+        img = self.vaedecode(latent, vae)
+        img = self.composite_tensor_image(img, base_img, oval_mask)
+
+        # Offset image y and inpaint the seam results from first inpaint
+        base_img = self.offset_image(img, 0.5, 0.5)
+        latent = self.vaeencode(base_img, vae)
+        latent = self.set__latent_noise_mask(latent, oval_mask)
+        ksampler.update_latent(latent)
+        latent = ksampler.sample()
+        img = self.vaedecode(latent, vae)
+        img = self.composite_tensor_image(img, base_img, oval_mask)
+
+        # Offset image back to its original position
+        img = self.offset_image(img, 0, 0.5)
+
+        return (img,)
 
     def vaeencode(self, image, vae):
         lat = vae.encode(image[:,:,:,:3])
@@ -206,27 +222,24 @@ class MakeSeamlessTile:
         s["noise_mask"] = mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1]))
         return s
     
-    def offset_image(self, image, tilesX = 2, tilesY = 2):
+    def offset_image(self, image, offset_x = 0.5, offset_y = 0.5):
 
         # 4 dimension tensor, batch, height, width, channel
         B, H, W, C = image.shape
 
-        offset_y = W // 2
-        offset_x = H // 2
+        offset_x = int((offset_x % 1.0) * H)  # Wrap-around for Y-axis offset
+        offset_y = int((offset_y % 1.0) * W)  # Wrap-around for X-axis offset
         output_image = torch.zeros_like(image)
 
-        # Top-left to bottom-right
-        output_image[:, offset_y:, offset_x:, :] = image[:, :offset_y, :offset_x, :]
-        # Top-right to bottom-left
-        output_image[:, offset_y:, :offset_x, :] = image[:, :offset_y, offset_x:, :]
-        # Bottom-left to top-right
-        output_image[:, :offset_y, offset_x:, :] = image[:, offset_y:, :offset_x, :]
-        # Bottom-right to top-left
-        output_image[:, :offset_y, :offset_x, :] = image[:, offset_y:, offset_x:, :]
+        # Slicing
+        output_image[:, :H-offset_x, :W-offset_y, :] = image[:, offset_x:, offset_y:, :]
+        output_image[:, :H-offset_x, W-offset_y:, :] = image[:, offset_x:, :offset_y, :]
+        output_image[:, H-offset_x:, :W-offset_y, :] = image[:, :offset_x, offset_y:, :]
+        output_image[:, H-offset_x:, W-offset_y:, :] = image[:, :offset_x, :offset_y, :]
 
         return output_image
     
-    def make_blurred_seams_mask(self, image, mask_strength, kernel_size, sigma):
+    def make_cross_mask(self, image, mask_strength, kernel_size, sigma):
         B, H, W, C = image.shape
         if not (0 <= mask_strength <= 1):
             raise ValueError("Strength must be between 0 and 1.")
@@ -239,9 +252,30 @@ class MakeSeamlessTile:
         mask[center_y - vertical_thickness // 2:center_y + vertical_thickness // 2, :] = 255
         mask[:, center_x - horizontal_thickness // 2:center_x + horizontal_thickness // 2] = 255
 
-        # blur the mask then normalizing it (divide by 255)
+        # blur the mask then normalize it (divide by 255)
         normalized_blurred_mask = self._gaussian_blur_mask(mask, kernel_size, sigma) / 255.0
     
+        return torch.tensor(normalized_blurred_mask, dtype=torch.float32)
+
+    def make_oval_mask(self, image, mask_strength, kernel_size, sigma):
+        
+        B, H, W, C = image.shape
+    
+        # Calculate the semi-major and semi-minor axes of the oval
+        a = int(W * mask_strength / 2)
+        b = int(H * mask_strength / 2)
+
+        mask = np.zeros((H, W), dtype=np.uint8)
+
+        # Generate the oval mask
+        y, x = np.ogrid[:H, :W]
+        center_y, center_x = H // 2, W // 2
+        ellipse_mask = ((x - center_x) ** 2) / (a ** 2) + ((y - center_y) ** 2) / (b ** 2) <= 1
+        mask[ellipse_mask] = 255
+
+        # Blur the mask and normalize it (divide by 255)
+        normalized_blurred_mask = self._gaussian_blur_mask(mask, kernel_size, sigma) / 255.0
+
         return torch.tensor(normalized_blurred_mask, dtype=torch.float32)
     
     def _gaussian_blur_mask(self, mask, kernel_size, sigma = 10.0):
