@@ -1,7 +1,7 @@
 # Albedo Sampler For ComfyUI
 
 ##Demo
-<Demo video link>
+<https://youtu.be/-jKrjZFtUok>
 
 ## Repository
 <https://github.com/trashgraphicard/Albedo-Sampler-for-ComfyUI.git>
