@@ -1,6 +1,6 @@
 # Albedo Sampler For ComfyUI
 
-##Demo
+## Demo
 <https://youtu.be/-jKrjZFtUok>
 
 ## Repository
