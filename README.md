@@ -13,4 +13,4 @@
 - Sample Image
 	- Remove shadows & lighting information from the input image
 - Make Seamless Tile
-	- Inpaint the seams to make the image tilable
+	- Inpaint the seams with user-selected AI model to make the image tilable
